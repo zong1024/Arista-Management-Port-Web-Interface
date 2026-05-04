@@ -1030,7 +1030,7 @@ def main():
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     scheme = "http"
     if args.tls_cert and args.tls_key:
-        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context = ssl.SSLContext(getattr(ssl, "PROTOCOL_TLS_SERVER", ssl.PROTOCOL_SSLv23))
         context.load_cert_chain(args.tls_cert, args.tls_key)
         server.socket = context.wrap_socket(server.socket, server_side=True)
         scheme = "https"
