@@ -86,6 +86,21 @@ python /mnt/flash/arista7050_web.py --host 0.0.0.0 --port 2480
 
 交换机内置版通过 EOS 本机 CLI 读取状态，不需要在网页里填写 SSH 密码。当前页面会读取 CPU、内存、温度、端口状态、接口实时速率、Kpps、错误计数，并支持点击每个端口查看详情。
 
+## WebUI 功能分支
+
+`codex/webui-operations-dashboard` 分支增加了更完整的交换机 WebUI：
+
+- 自动发现：接口、LLDP 邻居、基础拓扑。
+- 告警：环境异常、接口错误计数、有介质但链路未 Up、采集异常。
+- 自定义仪表盘基础能力：页面聚合健康、实时转发、实时交换、流量图、事件、告警。
+- 表项采集：VLAN、ARP、FDB/MAC address-table。
+- 协议采集：OSPF、OSPFv3、BGP summary。
+- 集成探测：Syslog、sFlow、NetFlow/IPFIX 相关配置。
+- 端口详情：up/down、介质、VLAN、双工、协商速率、RX/TX Mbps、Kpps、错误计数。
+- 受控配置：端口启停、接口描述、创建 VLAN、接口加入 VLAN、三层接口、OSPF network、BGP neighbor。
+
+配置动作需要在页面输入 `APPLY`，并通过固定模板生成命令。很多写操作只在有限环境中测试，生产使用前请先用“预览”核对命令，并在维护窗口验证。
+
 如需让局域网内所有 IP 都能访问 `2480`，需要在 EOS control-plane ACL 中放行 TCP/2480，并保存配置。示例：
 
 ```text

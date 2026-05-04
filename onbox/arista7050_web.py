@@ -290,6 +290,210 @@ def traffic_summary(ports):
     }
 
 
+def parse_lldp_neighbors(output):
+    neighbors = []
+    for line in output.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.lower().startswith(("port", "----")):
+            continue
+        if not re.match(r"^(Et|Ethernet|Ma)\S+", stripped, re.I):
+            continue
+        tokens = stripped.split()
+        if len(tokens) < 2:
+            continue
+        port = tokens[0]
+        neighbor = tokens[1]
+        ttl = tokens[-1] if tokens[-1].isdigit() else "-"
+        neighbor_port = tokens[-2] if len(tokens) > 3 else "-"
+        neighbors.append(
+            {
+                "port": normalize_interface(port),
+                "label": port,
+                "neighbor": neighbor,
+                "neighborPort": neighbor_port,
+                "ttl": ttl,
+                "raw": stripped,
+            }
+        )
+    return neighbors
+
+
+def parse_vlans(output):
+    vlans = []
+    for line in output.splitlines():
+        stripped = line.strip()
+        if not stripped or not re.match(r"^\d+\s+", stripped):
+            continue
+        parts = stripped.split(None, 3)
+        vlan = {"id": parts[0], "name": parts[1] if len(parts) > 1 else "-", "status": parts[2] if len(parts) > 2 else "-", "ports": parts[3] if len(parts) > 3 else ""}
+        vlans.append(vlan)
+    return vlans
+
+
+def parse_arp(output):
+    rows = []
+    for line in output.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.lower().startswith(("address", "protocol")):
+            continue
+        if not re.search(r"\d+\.\d+\.\d+\.\d+", stripped):
+            continue
+        tokens = stripped.split()
+        rows.append(
+            {
+                "address": next((token for token in tokens if re.match(r"\d+\.\d+\.\d+\.\d+", token)), "-"),
+                "mac": next((token for token in tokens if re.match(r"[0-9a-f]{4}\.[0-9a-f]{4}\.[0-9a-f]{4}", token, re.I)), "-"),
+                "interface": tokens[-1] if tokens else "-",
+                "raw": stripped,
+            }
+        )
+    return rows
+
+
+def parse_fdb(output):
+    rows = []
+    for line in output.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.lower().startswith(("vlan", "mac address", "---")):
+            continue
+        mac = re.search(r"[0-9a-f]{4}\.[0-9a-f]{4}\.[0-9a-f]{4}", stripped, re.I)
+        if not mac:
+            continue
+        tokens = stripped.split()
+        rows.append(
+            {
+                "vlan": tokens[0] if tokens else "-",
+                "mac": mac.group(0),
+                "type": next((token for token in tokens if token.lower() in ("dynamic", "static", "learned")), "-"),
+                "port": tokens[-1] if tokens else "-",
+                "raw": stripped,
+            }
+        )
+    return rows
+
+
+def parse_protocol_rows(output, kind):
+    rows = []
+    for line in output.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("%") or stripped.lower().startswith(("neighbor", "vrf", "bgp summary")):
+            continue
+        if kind == "bgp" and re.match(r"^\d+\.\d+\.\d+\.\d+", stripped):
+            tokens = stripped.split()
+            rows.append({"peer": tokens[0], "asn": tokens[2] if len(tokens) > 2 else "-", "state": tokens[-1], "raw": stripped})
+        elif kind != "bgp" and re.match(r"^\d+\.\d+\.\d+\.\d+", stripped):
+            tokens = stripped.split()
+            rows.append({"neighbor": tokens[0], "state": tokens[2] if len(tokens) > 2 else "-", "interface": tokens[-1], "raw": stripped})
+    return rows
+
+
+def parse_integrations(config_output):
+    text = config_output.lower()
+    return {
+        "syslog": "logging host" in text,
+        "sflow": "sflow" in text,
+        "netflow": "netflow" in text or "ip flow" in text or "flow exporter" in text,
+        "raw": config_output,
+    }
+
+
+def build_alerts(ports, health, env_output, command_errors):
+    alerts = []
+    if command_errors:
+        alerts.append({"severity": "critical", "title": "采集异常", "message": "; ".join(command_errors[:3])})
+    if health.get("fanStatus") != "OK":
+        alerts.append({"severity": "critical", "title": "风扇状态异常", "message": "请检查 show environment all。"})
+    if health.get("psuStatus") != "OK":
+        alerts.append({"severity": "critical", "title": "电源状态异常", "message": "请检查 PSU 状态。"})
+    if int(health.get("temperature") or 0) >= 55:
+        alerts.append({"severity": "warning", "title": "温度偏高", "message": "%sC" % health.get("temperature")})
+    for port in ports:
+        if port.get("hasMedia") and port.get("status") != "up":
+            alerts.append({"severity": "warning", "title": "介质存在但链路未 Up", "message": "%s / %s" % (port.get("label"), port.get("media"))})
+        if int(port.get("errors") or 0) > 0:
+            alerts.append({"severity": "warning", "title": "接口错误计数", "message": "%s errors=%s" % (port.get("label"), port.get("errors"))})
+    if "fail" in env_output.lower() or "fault" in env_output.lower():
+        alerts.append({"severity": "critical", "title": "环境告警", "message": "show environment all 中包含 fail/fault。"})
+    return alerts[:100]
+
+
+def safe_text(value, pattern=r"^[\w .:/@+-]{0,80}$"):
+    value = str(value or "").strip()
+    if not re.match(pattern, value):
+        raise ValueError("Invalid input: %s" % value)
+    return value
+
+
+def safe_interface(value):
+    value = str(value or "").strip()
+    if not re.match(r"^(Ethernet|Et)\d+(?:/\d+)?$", value, re.I):
+        raise ValueError("Invalid interface.")
+    return normalize_interface(value)
+
+
+def safe_vlan(value):
+    number = int(value)
+    if number < 1 or number > 4094:
+        raise ValueError("VLAN must be 1-4094.")
+    return str(number)
+
+
+def safe_ip_prefix(value):
+    value = str(value or "").strip()
+    if not re.match(r"^\d{1,3}(?:\.\d{1,3}){3}/\d{1,2}$", value):
+        raise ValueError("Expected IPv4 prefix like 192.168.1.1/24.")
+    return value
+
+
+def build_config_action(action, params):
+    params = params or {}
+    if action == "interface_admin":
+        iface = safe_interface(params.get("interface"))
+        state = str(params.get("state") or "").lower()
+        if state not in ("enable", "disable"):
+            raise ValueError("state must be enable or disable.")
+        return ["interface %s" % iface, "no shutdown" if state == "enable" else "shutdown"]
+    if action == "description":
+        return ["interface %s" % safe_interface(params.get("interface")), "description %s" % safe_text(params.get("description"))]
+    if action == "access_vlan":
+        return ["interface %s" % safe_interface(params.get("interface")), "switchport mode access", "switchport access vlan %s" % safe_vlan(params.get("vlan"))]
+    if action == "create_vlan":
+        commands = ["vlan %s" % safe_vlan(params.get("vlan"))]
+        name = str(params.get("name") or "").strip()
+        if name:
+            commands.append("name %s" % safe_text(name))
+        return commands
+    if action == "l3_interface":
+        return ["interface %s" % safe_interface(params.get("interface")), "no switchport", "ip address %s" % safe_ip_prefix(params.get("address"))]
+    if action == "ospf_network":
+        process = safe_text(params.get("process") or "1", r"^\d{1,5}$")
+        network = safe_ip_prefix(params.get("network"))
+        area = safe_text(params.get("area") or "0", r"^[\d.]{1,15}$")
+        return ["router ospf %s" % process, "network %s area %s" % (network, area)]
+    if action == "bgp_neighbor":
+        asn = safe_text(params.get("asn"), r"^\d{1,10}$")
+        peer = safe_text(params.get("neighbor"), r"^\d{1,3}(?:\.\d{1,3}){3}$")
+        remote_as = safe_text(params.get("remoteAs"), r"^\d{1,10}$")
+        return ["router bgp %s" % asn, "neighbor %s remote-as %s" % (peer, remote_as)]
+    raise ValueError("Unsupported config action.")
+
+
+def run_config_commands(commands):
+    script = "configure terminal\n%s\nend" % "\n".join(commands)
+    runners = [["/usr/bin/Cli", "-c", script], ["Cli", "-c", script], ["/usr/bin/FastCli", "-p", "15", "-c", script]]
+    last_error = None
+    for cmd in runners:
+        try:
+            result = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=25, check=False)
+            output = ((result.stdout or "") + (result.stderr or "")).strip()
+            if result.returncode == 0:
+                return output or "Configuration applied."
+            last_error = output or "command returned %s" % result.returncode
+        except FileNotFoundError as exc:
+            last_error = str(exc)
+    raise RuntimeError(last_error or "No EOS CLI runner found.")
+
+
 def collect_state():
     errors = []
 
@@ -308,10 +512,20 @@ def collect_state():
     errors_output = get("show interfaces counters errors")
     top_output = get("show processes top once")
     env_output = get("show environment all")
+    lldp_output = get("show lldp neighbors")
+    vlan_output = get("show vlan brief")
+    arp_output = get("show arp")
+    fdb_output = get("show mac address-table")
+    ospf_output = get("show ip ospf neighbor")
+    ospfv3_output = get("show ipv6 ospf neighbor")
+    bgp_output = get("show ip bgp summary")
+    integration_output = get("show running-config | include logging host|sflow|netflow|ip flow|flow exporter|flow monitor")
 
     eos_version, serial = parse_version(version_output)
     ports = enrich_ports(parse_interfaces(interface_output), parse_interface_rates(rates_output), parse_interface_errors(errors_output))
     traffic = traffic_summary(ports)
+    health = parse_system_health(top_output, env_output, version_output)
+    alerts = build_alerts(ports, health, env_output, errors)
     return {
         "device": {
             "model": MODEL,
@@ -325,14 +539,25 @@ def collect_state():
             "lastRefresh": now_ms(),
             "source": "on-box",
         },
-        "health": parse_system_health(top_output, env_output, version_output),
+        "health": health,
         "traffic": traffic,
         "ports": ports,
+        "lldp": parse_lldp_neighbors(lldp_output),
+        "vlans": parse_vlans(vlan_output),
+        "arp": parse_arp(arp_output),
+        "fdb": parse_fdb(fdb_output),
+        "protocols": {
+            "ospf": parse_protocol_rows(ospf_output, "ospf"),
+            "ospfv3": parse_protocol_rows(ospfv3_output, "ospfv3"),
+            "bgp": parse_protocol_rows(bgp_output, "bgp"),
+        },
+        "integrations": parse_integrations(integration_output),
+        "alerts": alerts,
         "events": [
             {
                 "time": now_ms(),
-                "level": "error" if errors else "success",
-                "message": "; ".join(errors) if errors else "Refreshed from local EOS CLI.",
+                "level": "error" if errors else ("warning" if alerts else "success"),
+                "message": "; ".join(errors) if errors else ("Active alerts: %s" % len(alerts) if alerts else "Refreshed from local EOS CLI."),
             }
         ],
     }
@@ -354,7 +579,8 @@ INDEX_HTML = r"""<!doctype html>
     .side-stack{display:grid;gap:16px}.gauge-list{display:grid;gap:12px}.gauge-row{display:grid;grid-template-columns:56px minmax(120px,1fr) 60px;align-items:center;gap:10px;color:var(--muted);font-size:13px}meter{width:100%;height:12px}.mini-status{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:15px}.mini-status span{min-height:44px;padding:10px;border:1px solid var(--line);border-radius:8px;color:var(--muted);background:#fbfcfd}.mini-status b{display:block;margin-top:2px;color:var(--ink)}.command-form{display:grid;grid-template-columns:minmax(0,1fr) 92px;gap:10px}input{width:100%;min-height:38px;border:1px solid var(--line);border-radius:8px;padding:0 10px;color:var(--ink);background:#fff}pre{min-height:210px;max-height:360px;margin:12px 0 0;overflow:auto;border:1px solid #1e293b;border-radius:8px;padding:14px;color:#d7e2ef;background:#111827;font:13px/1.55 "Cascadia Mono",Consolas,monospace;white-space:pre-wrap}
     .event-list{display:grid;gap:8px;max-height:320px;margin:0;padding:0;overflow:auto;list-style:none}.event-list li{display:grid;gap:3px;min-height:54px;border-left:4px solid var(--line);border-radius:8px;padding:9px 10px;background:#fbfcfd}.event-list li[data-level=success]{border-left-color:var(--green)}.event-list li[data-level=error]{border-left-color:var(--red)}.event-time{color:var(--muted);font-size:11px}.event-message{font-size:13px}.toast{position:fixed;right:18px;bottom:18px;max-width:min(420px,calc(100vw - 36px));padding:12px 14px;border:1px solid var(--line);border-radius:8px;background:#fff;box-shadow:0 14px 35px rgba(24,32,42,.08);transform:translateY(90px);opacity:0;transition:.18s ease}.toast.show{transform:translateY(0);opacity:1}
     .modal{position:fixed;inset:0;display:none;align-items:center;justify-content:center;padding:18px;background:rgba(15,23,42,.42);z-index:30}.modal.show{display:flex}.dialog{width:min(760px,100%);max-height:88vh;overflow:auto;border-radius:8px;border:1px solid var(--line);background:#fff;box-shadow:0 24px 80px rgba(0,0,0,.24)}.dialog-head{display:flex;align-items:center;justify-content:space-between;padding:16px;border-bottom:1px solid var(--line)}.dialog-body{padding:16px}.detail-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.detail-item{border:1px solid var(--line);border-radius:8px;padding:10px;background:#fbfcfd}.detail-item span{display:block;color:var(--muted);font-size:11px}.detail-item b{display:block;margin-top:5px;font-size:15px;overflow-wrap:anywhere}
-    @media(max-width:1080px){.overview{grid-template-columns:repeat(2,minmax(0,1fr))}.main-grid,.bottom-grid{grid-template-columns:1fr}.port-grid{grid-template-columns:repeat(6,minmax(72px,1fr))}}@media(max-width:720px){.topbar{align-items:flex-start;flex-direction:column}.actions{width:100%;justify-content:space-between}.overview,.mini-status,.detail-grid{grid-template-columns:1fr}.port-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.command-form{grid-template-columns:1fr}}
+    .wide-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;margin-top:16px}.table-wrap{max-height:280px;overflow:auto;border:1px solid var(--line);border-radius:8px}.data-table{width:100%;border-collapse:collapse;font-size:12px}.data-table th,.data-table td{padding:8px 9px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}.data-table th{position:sticky;top:0;background:#f8fafc;color:var(--muted);font-size:11px}.alert-list,.topology-list{display:grid;gap:8px;margin:0;padding:0;list-style:none}.alert-list li,.topology-list li{border-left:4px solid var(--line);border-radius:8px;padding:9px 10px;background:#fbfcfd;font-size:13px}.alert-list li[data-severity=critical]{border-left-color:var(--red)}.alert-list li[data-severity=warning]{border-left-color:var(--amber)}.alert-list b{display:block}.ops-form{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.ops-form label{display:grid;gap:5px;color:var(--muted);font-size:12px;font-weight:700}.ops-form select,.ops-form input{min-height:36px;border:1px solid var(--line);border-radius:8px;padding:0 9px;background:#fff}.ops-form button{align-self:end}.full{grid-column:1/-1}.chart{width:100%;height:120px;border:1px solid var(--line);border-radius:8px;background:#fbfcfd}
+    @media(max-width:1080px){.overview{grid-template-columns:repeat(2,minmax(0,1fr))}.main-grid,.bottom-grid,.wide-grid{grid-template-columns:1fr}.port-grid{grid-template-columns:repeat(6,minmax(72px,1fr))}}@media(max-width:720px){.topbar{align-items:flex-start;flex-direction:column}.actions{width:100%;justify-content:space-between}.overview,.mini-status,.detail-grid,.ops-form{grid-template-columns:1fr}.port-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.command-form{grid-template-columns:1fr}}
   </style>
 </head>
 <body>
@@ -365,16 +591,23 @@ INDEX_HTML = r"""<!doctype html>
       <aside class="side-stack"><div class="panel"><div class="panel-title"><h2>设备健康</h2><span id="lastRefresh" class="muted">-</span></div><div class="gauge-list"><div class="gauge-row"><span>CPU</span><meter id="cpuMeter" min="0" max="100" value="0"></meter><strong id="cpuValue">-</strong></div><div class="gauge-row"><span>内存</span><meter id="memoryMeter" min="0" max="100" value="0"></meter><strong id="memoryValue">-</strong></div><div class="gauge-row"><span>温度</span><meter id="temperatureMeter" min="0" max="90" value="0"></meter><strong id="temperatureValue">-</strong></div></div><div class="mini-status"><span>风扇 <b id="fanStatus">-</b></span><span>电源 <b id="psuStatus">-</b></span></div></div>
       <div class="panel"><div class="panel-title"><h2>运行位置</h2><span class="muted">0.0.0.0:2480</span></div><p class="muted">此页面直接运行在交换机 EOS bash 环境中，通过本机 CLI 读取实时状态。</p></div></aside></section>
     <section class="bottom-grid"><div class="panel"><div class="panel-title"><h2>命令控制台</h2><span class="muted">只读命令</span></div><form id="commandForm" class="command-form"><input id="commandInput" value="show interfaces status" /><button class="primary" type="submit">运行</button></form><pre id="commandOutput">等待命令...</pre></div><div class="panel"><div class="panel-title"><h2>事件</h2><span class="muted">最近状态</span></div><ul id="eventList" class="event-list"></ul></div></section>
+    <section class="wide-grid"><div class="panel"><div class="panel-title"><h2>设备告警</h2><span class="muted">自动发现</span></div><ul id="alertList" class="alert-list"></ul></div><div class="panel"><div class="panel-title"><h2>流量图</h2><span id="chartLabel" class="muted">实时汇总</span></div><canvas id="trafficChart" class="chart" width="700" height="120"></canvas></div></section>
+    <section class="wide-grid"><div class="panel"><div class="panel-title"><h2>基础拓扑 / LLDP</h2><span class="muted">邻居</span></div><ul id="lldpList" class="topology-list"></ul></div><div class="panel"><div class="panel-title"><h2>协议状态</h2><span class="muted">OSPF / OSPFv3 / BGP</span></div><div class="table-wrap"><table id="protocolTable" class="data-table"></table></div></div></section>
+    <section class="wide-grid"><div class="panel"><div class="panel-title"><h2>VLAN / ARP / FDB</h2><span class="muted">采集表</span></div><div class="table-wrap"><table id="tablesView" class="data-table"></table></div></div><div class="panel"><div class="panel-title"><h2>Syslog / Flow 集成</h2><span class="muted">配置探测</span></div><div id="integrationView" class="mini-status"></div></div></section>
+    <section class="panel" style="margin-top:16px"><div class="panel-title"><h2>受控配置</h2><span class="muted">需要输入 APPLY</span></div><form id="opsForm" class="ops-form"><label><span>动作</span><select id="opsAction"><option value="interface_admin">端口启停</option><option value="description">改接口描述</option><option value="create_vlan">创建 VLAN</option><option value="access_vlan">接口加入 VLAN</option><option value="l3_interface">配置三层接口</option><option value="ospf_network">OSPF network</option><option value="bgp_neighbor">BGP neighbor</option></select></label><label><span>接口</span><input id="opsInterface" placeholder="Ethernet3" /></label><label><span>状态</span><select id="opsState"><option value="enable">enable</option><option value="disable">disable</option></select></label><label><span>VLAN</span><input id="opsVlan" placeholder="10" /></label><label><span>描述 / 名称</span><input id="opsText" placeholder="server-uplink" /></label><label><span>IP/前缀</span><input id="opsAddress" placeholder="192.168.10.1/24" /></label><label><span>进程/本端 AS</span><input id="opsProcess" placeholder="1 或 65000" /></label><label><span>Area / 邻居 AS</span><input id="opsArea" placeholder="0 或 65001" /></label><label><span>BGP 邻居</span><input id="opsNeighbor" placeholder="192.168.10.2" /></label><label><span>确认</span><input id="opsConfirm" placeholder="APPLY" /></label><button id="opsPreview" class="ghost" type="button">预览</button><button class="primary" type="submit">执行</button><pre id="opsOutput" class="full">等待操作...</pre></form></section>
   </main>
   <div id="portModal" class="modal"><div class="dialog"><div class="dialog-head"><h2 id="modalTitle">端口详情</h2><button id="modalClose" class="ghost">关闭</button></div><div id="modalBody" class="dialog-body"></div></div></div>
   <div id="toast" class="toast"></div>
   <script>
-    const $=s=>document.querySelector(s),el={refreshBtn:$("#refreshBtn"),hostname:$("#hostname"),eosVersion:$("#eosVersion"),forwardingLive:$("#forwardingLive"),switchingLive:$("#switchingLive"),trafficSubline:$("#trafficSubline"),capacitySubline:$("#capacitySubline"),portSummary:$("#portSummary"),lastRefresh:$("#lastRefresh"),cpuMeter:$("#cpuMeter"),cpuValue:$("#cpuValue"),memoryMeter:$("#memoryMeter"),memoryValue:$("#memoryValue"),temperatureMeter:$("#temperatureMeter"),temperatureValue:$("#temperatureValue"),fanStatus:$("#fanStatus"),psuStatus:$("#psuStatus"),portGrid:$("#portGrid"),commandForm:$("#commandForm"),commandInput:$("#commandInput"),commandOutput:$("#commandOutput"),eventList:$("#eventList"),toast:$("#toast"),portModal:$("#portModal"),modalTitle:$("#modalTitle"),modalBody:$("#modalBody"),modalClose:$("#modalClose")};
+    const $=s=>document.querySelector(s),el={refreshBtn:$("#refreshBtn"),hostname:$("#hostname"),eosVersion:$("#eosVersion"),forwardingLive:$("#forwardingLive"),switchingLive:$("#switchingLive"),trafficSubline:$("#trafficSubline"),capacitySubline:$("#capacitySubline"),portSummary:$("#portSummary"),lastRefresh:$("#lastRefresh"),cpuMeter:$("#cpuMeter"),cpuValue:$("#cpuValue"),memoryMeter:$("#memoryMeter"),memoryValue:$("#memoryValue"),temperatureMeter:$("#temperatureMeter"),temperatureValue:$("#temperatureValue"),fanStatus:$("#fanStatus"),psuStatus:$("#psuStatus"),portGrid:$("#portGrid"),commandForm:$("#commandForm"),commandInput:$("#commandInput"),commandOutput:$("#commandOutput"),eventList:$("#eventList"),alertList:$("#alertList"),lldpList:$("#lldpList"),protocolTable:$("#protocolTable"),tablesView:$("#tablesView"),integrationView:$("#integrationView"),trafficChart:$("#trafficChart"),chartLabel:$("#chartLabel"),opsForm:$("#opsForm"),opsAction:$("#opsAction"),opsInterface:$("#opsInterface"),opsState:$("#opsState"),opsVlan:$("#opsVlan"),opsText:$("#opsText"),opsAddress:$("#opsAddress"),opsProcess:$("#opsProcess"),opsArea:$("#opsArea"),opsNeighbor:$("#opsNeighbor"),opsConfirm:$("#opsConfirm"),opsPreview:$("#opsPreview"),opsOutput:$("#opsOutput"),toast:$("#toast"),portModal:$("#portModal"),modalTitle:$("#modalTitle"),modalBody:$("#modalBody"),modalClose:$("#modalClose")};
     let toastTimer=null,currentPorts=[];function esc(v){return String(v??"-").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]))}function toast(m){el.toast.textContent=m;el.toast.classList.add("show");clearTimeout(toastTimer);toastTimer=setTimeout(()=>el.toast.classList.remove("show"),2600)}function fmt(v){return v?new Intl.DateTimeFormat("zh-CN",{month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",second:"2-digit"}).format(new Date(v)):"-"}async function req(u,o={}){const r=await fetch(u,{headers:{"Content-Type":"application/json"},...o});const p=await r.json();if(!r.ok||p.ok===false)throw new Error(p.error||`HTTP ${r.status}`);return p}function pct(v){return Number.isFinite(Number(v))?`${Number(v).toFixed(0)}%`:"-"}function mbps(v){return `${Number(v||0).toFixed(2)}M`}
     function detail(label,value){return `<div class="detail-item"><span>${label}</span><b>${esc(value)}</b></div>`}function showPort(i){const p=currentPorts[i];if(!p)return;el.modalTitle.textContent=`${p.label||p.name} 端口详情`;el.modalBody.innerHTML=`<div class="detail-grid">${detail("状态",p.status)}${detail("VLAN",p.vlan)}${detail("双工",p.duplex)}${detail("协商/网速",p.speed)}${detail("介质",p.media)}${detail("RX Mbps",Number(p.rxMbps||0).toFixed(2))}${detail("TX Mbps",Number(p.txMbps||0).toFixed(2))}${detail("RX Kpps",Number(p.rxKpps||0).toFixed(2))}${detail("TX Kpps",Number(p.txKpps||0).toFixed(2))}${detail("错误计数",p.errors||0)}${detail("描述",p.description||"-")}</div><pre>${esc([p.statusLine,p.rateLine,p.errorLine].filter(Boolean).join("\n"))}</pre>`;el.portModal.classList.add("show")}
-    function render(state){const d=state.device||{},h=state.health||{},t=state.traffic||{},ports=state.ports||[],up=ports.filter(p=>p.status==="up").length,media=ports.filter(p=>p.hasMedia&&p.status!=="up").length,err=ports.filter(p=>Number(p.errors||0)>0).length;currentPorts=ports;el.hostname.textContent=d.hostname||"-";el.eosVersion.textContent=d.eosVersion||"-";el.forwardingLive.textContent=d.forwardingRate||t.packetRateLabel||"-";el.switchingLive.textContent=d.switchingCapacity||t.throughputLabel||"-";el.trafficSubline.textContent=`RX ${mbps(t.rxMbps)} / TX ${mbps(t.txMbps)}`;el.capacitySubline.textContent=`占用 ${Number(t.capacityUtilization||0).toFixed(4)}% of 2.56Tbps`;el.portSummary.textContent=`${up}/${ports.length} up, ${media} media, ${err} error`;el.lastRefresh.textContent=fmt(d.lastRefresh);el.cpuMeter.value=Number(h.cpu||0);el.cpuValue.textContent=pct(h.cpu);el.memoryMeter.value=Number(h.memory||0);el.memoryValue.textContent=pct(h.memory);el.temperatureMeter.value=Number(h.temperature||0);el.temperatureValue.textContent=Number.isFinite(Number(h.temperature))?`${h.temperature}C`:"-";el.fanStatus.textContent=h.fanStatus||"-";el.psuStatus.textContent=h.psuStatus||"-";el.portGrid.innerHTML=ports.map((p,i)=>`<button class="port" data-index="${i}" data-status="${p.status}" data-media="${Boolean(p.hasMedia)}" data-errors="${Number(p.errors||0)>0}"><div class="port-name"><span>${esc(p.label||p.name)}</span><span class="port-speed">${esc(p.speed)}</span></div><div class="port-detail">${esc(p.media)} / VLAN ${esc(p.vlan)}<br>${esc(p.description||p.status)}</div><div class="port-traffic"><span>RX <b>${mbps(p.rxMbps)}</b></span><span>TX <b>${mbps(p.txMbps)}</b></span></div></button>`).join("");el.eventList.innerHTML=(state.events||[]).map(e=>`<li data-level="${e.level||"info"}"><span class="event-time">${fmt(e.time)} / ${esc(e.level||"info")}</span><span class="event-message">${esc(e.message)}</span></li>`).join("")}
+    const history=[];function drawChart(t){history.push(Number(t.totalMbps||0));while(history.length>40)history.shift();const c=el.trafficChart,ctx=c.getContext("2d"),w=c.width,h=c.height,max=Math.max(1,...history);ctx.clearRect(0,0,w,h);ctx.strokeStyle="#dde3ea";ctx.beginPath();for(let y=20;y<h;y+=25){ctx.moveTo(0,y);ctx.lineTo(w,y)}ctx.stroke();ctx.strokeStyle="#0f766e";ctx.lineWidth=2;ctx.beginPath();history.forEach((v,i)=>{const x=i*(w/Math.max(1,history.length-1)),y=h-12-(v/max)*(h-24);i?ctx.lineTo(x,y):ctx.moveTo(x,y)});ctx.stroke();el.chartLabel.textContent=`${Number(t.totalMbps||0).toFixed(2)} Mbps / ${Number(t.totalKpps||0).toFixed(2)} Kpps`}
+    function rows(headers,items,map){return `<thead><tr>${headers.map(h=>`<th>${h}</th>`).join("")}</tr></thead><tbody>${items.map(item=>`<tr>${map(item).map(v=>`<td>${esc(v)}</td>`).join("")}</tr>`).join("")}</tbody>`}function renderExtra(state){const alerts=state.alerts||[];el.alertList.innerHTML=alerts.length?alerts.map(a=>`<li data-severity="${esc(a.severity)}"><b>${esc(a.title)}</b>${esc(a.message)}</li>`).join(""):"<li>暂无告警</li>";el.lldpList.innerHTML=(state.lldp||[]).length?(state.lldp||[]).map(n=>`<li><b>${esc(n.label)}</b> → ${esc(n.neighbor)} / ${esc(n.neighborPort)}</li>`).join(""):"<li>未发现 LLDP 邻居</li>";const proto=[...(state.protocols?.ospf||[]).map(x=>({type:"OSPF",a:x.neighbor,b:x.state,c:x.interface})),...(state.protocols?.ospfv3||[]).map(x=>({type:"OSPFv3",a:x.neighbor,b:x.state,c:x.interface})),...(state.protocols?.bgp||[]).map(x=>({type:"BGP",a:x.peer,b:x.state,c:x.asn}))];el.protocolTable.innerHTML=rows(["协议","对象","状态","接口/AS"],proto,x=>[x.type,x.a,x.b,x.c]);const tableItems=[...(state.vlans||[]).slice(0,40).map(x=>({type:"VLAN",a:x.id,b:x.name,c:x.status,d:x.ports})),...(state.arp||[]).slice(0,40).map(x=>({type:"ARP",a:x.address,b:x.mac,c:x.interface,d:""})),...(state.fdb||[]).slice(0,40).map(x=>({type:"FDB",a:x.vlan,b:x.mac,c:x.type,d:x.port}))];el.tablesView.innerHTML=rows(["类型","键","值","状态","端口"],tableItems,x=>[x.type,x.a,x.b,x.c,x.d]);const i=state.integrations||{};el.integrationView.innerHTML=`<span>Syslog <b>${i.syslog?"ON":"OFF"}</b></span><span>sFlow <b>${i.sflow?"ON":"OFF"}</b></span><span>NetFlow/IPFIX <b>${i.netflow?"ON":"OFF"}</b></span><span>采集 <b>${(state.vlans||[]).length} VLAN / ${(state.arp||[]).length} ARP / ${(state.fdb||[]).length} FDB</b></span>`;drawChart(state.traffic||{})}
+    function render(state){const d=state.device||{},h=state.health||{},t=state.traffic||{},ports=state.ports||[],up=ports.filter(p=>p.status==="up").length,media=ports.filter(p=>p.hasMedia&&p.status!=="up").length,err=ports.filter(p=>Number(p.errors||0)>0).length;currentPorts=ports;el.hostname.textContent=d.hostname||"-";el.eosVersion.textContent=d.eosVersion||"-";el.forwardingLive.textContent=d.forwardingRate||t.packetRateLabel||"-";el.switchingLive.textContent=d.switchingCapacity||t.throughputLabel||"-";el.trafficSubline.textContent=`RX ${mbps(t.rxMbps)} / TX ${mbps(t.txMbps)}`;el.capacitySubline.textContent=`占用 ${Number(t.capacityUtilization||0).toFixed(4)}% of 2.56Tbps`;el.portSummary.textContent=`${up}/${ports.length} up, ${media} media, ${err} error`;el.lastRefresh.textContent=fmt(d.lastRefresh);el.cpuMeter.value=Number(h.cpu||0);el.cpuValue.textContent=pct(h.cpu);el.memoryMeter.value=Number(h.memory||0);el.memoryValue.textContent=pct(h.memory);el.temperatureMeter.value=Number(h.temperature||0);el.temperatureValue.textContent=Number.isFinite(Number(h.temperature))?`${h.temperature}C`:"-";el.fanStatus.textContent=h.fanStatus||"-";el.psuStatus.textContent=h.psuStatus||"-";el.portGrid.innerHTML=ports.map((p,i)=>`<button class="port" data-index="${i}" data-status="${p.status}" data-media="${Boolean(p.hasMedia)}" data-errors="${Number(p.errors||0)>0}"><div class="port-name"><span>${esc(p.label||p.name)}</span><span class="port-speed">${esc(p.speed)}</span></div><div class="port-detail">${esc(p.media)} / VLAN ${esc(p.vlan)}<br>${esc(p.description||p.status)}</div><div class="port-traffic"><span>RX <b>${mbps(p.rxMbps)}</b></span><span>TX <b>${mbps(p.txMbps)}</b></span></div></button>`).join("");el.eventList.innerHTML=(state.events||[]).map(e=>`<li data-level="${e.level||"info"}"><span class="event-time">${fmt(e.time)} / ${esc(e.level||"info")}</span><span class="event-message">${esc(e.message)}</span></li>`).join("");renderExtra(state)}
     async function load(){const p=await req("/api/state");render(p.state)}async function refresh(){el.refreshBtn.disabled=true;el.refreshBtn.textContent="刷新中";try{const p=await req("/api/refresh",{method:"POST",body:"{}"});render(p.state);toast("已从 EOS CLI 刷新")}catch(e){toast(e.message)}finally{el.refreshBtn.disabled=false;el.refreshBtn.textContent="刷新"}}
-    el.refreshBtn.addEventListener("click",refresh);el.portGrid.addEventListener("click",e=>{const card=e.target.closest(".port");if(card)showPort(Number(card.dataset.index))});el.modalClose.addEventListener("click",()=>el.portModal.classList.remove("show"));el.portModal.addEventListener("click",e=>{if(e.target===el.portModal)el.portModal.classList.remove("show")});el.commandForm.addEventListener("submit",async e=>{e.preventDefault();const command=el.commandInput.value.trim();if(!command)return;el.commandOutput.textContent=`> ${command}\n运行中...`;try{const p=await req("/api/command",{method:"POST",body:JSON.stringify({command})});el.commandOutput.textContent=`> ${p.command}\n${p.output}`}catch(err){el.commandOutput.textContent=`> ${command}\nERROR: ${err.message}`}});load().catch(e=>toast(e.message));setInterval(()=>load().catch(()=>{}),15000);
+    function opsPayload(dryRun){return{action:el.opsAction.value,confirm:el.opsConfirm.value,dryRun,params:{interface:el.opsInterface.value,state:el.opsState.value,vlan:el.opsVlan.value,description:el.opsText.value,name:el.opsText.value,address:el.opsAddress.value,network:el.opsAddress.value,process:el.opsProcess.value,asn:el.opsProcess.value,area:el.opsArea.value,remoteAs:el.opsArea.value,neighbor:el.opsNeighbor.value}}}async function runOps(dryRun){el.opsOutput.textContent=dryRun?"生成配置中...":"执行配置中...";try{const p=await req("/api/config",{method:"POST",body:JSON.stringify(opsPayload(dryRun))});el.opsOutput.textContent=(p.commands||[]).join("\n")+(p.output?`\n\n${p.output}`:"");if(!dryRun){toast("配置已提交");refresh()}}catch(err){el.opsOutput.textContent=`ERROR: ${err.message}`}}
+    el.refreshBtn.addEventListener("click",refresh);el.portGrid.addEventListener("click",e=>{const card=e.target.closest(".port");if(card)showPort(Number(card.dataset.index))});el.modalClose.addEventListener("click",()=>el.portModal.classList.remove("show"));el.portModal.addEventListener("click",e=>{if(e.target===el.portModal)el.portModal.classList.remove("show")});el.opsPreview.addEventListener("click",()=>runOps(true));el.opsForm.addEventListener("submit",e=>{e.preventDefault();runOps(false)});el.commandForm.addEventListener("submit",async e=>{e.preventDefault();const command=el.commandInput.value.trim();if(!command)return;el.commandOutput.textContent=`> ${command}\n运行中...`;try{const p=await req("/api/command",{method:"POST",body:JSON.stringify({command})});el.commandOutput.textContent=`> ${p.command}\n${p.output}`}catch(err){el.commandOutput.textContent=`> ${command}\nERROR: ${err.message}`}});load().catch(e=>toast(e.message));setInterval(()=>load().catch(()=>{}),15000);
   </script>
 </body>
 </html>"""
@@ -437,6 +670,20 @@ class Handler(BaseHTTPRequestHandler):
                 command = str(payload.get("command", "")).strip()
                 output = run_cli(command)
                 self.send_json(200, {"ok": True, "command": command, "output": output})
+                return
+
+            if path == "/api/config":
+                payload = self.read_json()
+                if payload.get("confirm") != "APPLY":
+                    raise ValueError("Type APPLY to confirm configuration changes.")
+                action = str(payload.get("action") or "")
+                commands = build_config_action(action, payload.get("params") or {})
+                if payload.get("dryRun"):
+                    self.send_json(200, {"ok": True, "dryRun": True, "commands": commands})
+                    return
+                output = run_config_commands(commands)
+                Handler.cached_state = None
+                self.send_json(200, {"ok": True, "action": action, "commands": commands, "output": output})
                 return
 
             self.send_json(404, {"ok": False, "error": "Not found"})
