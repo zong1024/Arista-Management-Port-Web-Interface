@@ -1,0 +1,16 @@
+{
+  "name": "arista-7050qx-console-admin",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Local web admin console for Arista DCS-7050QX-32S-F.",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "ssh2": "^1.17.0"
+  }
+}
