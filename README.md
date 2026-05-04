@@ -1,15 +1,15 @@
-# Arista Management Port Web Interface
+# Arista 管理口 Web 界面
 
-## Deploy
+## 部署方法
 
-Copy the on-box WebUI to the switch:
+把 on-box WebUI 上传到交换机：
 
 ```powershell
-scp .\onbox\arista7050_web.py admin@SWITCH_IP:/mnt/flash/arista7050_web.py
-ssh admin@SWITCH_IP
+scp .\onbox\arista7050_web.py admin@交换机IP:/mnt/flash/arista7050_web.py
+ssh admin@交换机IP
 ```
 
-Run it on EOS:
+在 EOS 上运行：
 
 ```text
 enable
@@ -17,7 +17,7 @@ bash
 python3 /mnt/flash/arista7050_web.py --host 0.0.0.0 --port 2480 --daemon
 ```
 
-Allow access to TCP/2480 through the EOS control-plane ACL:
+在 EOS control-plane ACL 中放行 TCP/2480：
 
 ```text
 configure terminal
@@ -28,73 +28,73 @@ system control-plane
 write memory
 ```
 
-Open the WebUI:
+打开 WebUI：
 
 ```text
-http://SWITCH_IP:2480/
+http://交换机IP:2480/
 ```
 
 ## TODO
 
-### Completed
+### 已完成
 
-- [x] On-box single-file WebUI that runs directly on Arista EOS with Python.
-- [x] HTTP service on TCP/2480.
-- [x] Dashboard page with hostname, EOS version, CPU, memory, temperature, fan, PSU, alerts, events, and integration status.
-- [x] Dedicated ports page at `/ports`.
-- [x] Port up/down/media/error color states.
-- [x] Per-port detail modal with status, VLAN, duplex, negotiated speed, media type, RX/TX Mbps, Kpps, errors, and raw EOS lines.
-- [x] Per-port RX/TX line chart in the port detail modal.
-- [x] Global traffic chart for aggregate interface throughput.
-- [x] Dark mode toggle with browser-local persistence.
-- [x] VLAN table collection with `show vlan brief`.
-- [x] ARP table collection with `show arp`.
-- [x] FDB/MAC table collection with `show mac address-table`.
-- [x] LLDP neighbor collection with `show lldp neighbors`.
-- [x] OSPF, OSPFv3, and BGP summary collection.
-- [x] Basic alert generation for environment faults, fan/PSU issues, high temperature, interface errors, media-present/down links, and collection failures.
-- [x] Syslog, sFlow, and NetFlow/IPFIX configuration detection.
-- [x] Read-only command console with write/destructive command blocking.
-- [x] Controlled configuration API requiring `confirm: "APPLY"`.
-- [x] Dry-run preview for configuration templates.
-- [x] Configuration templates for interface enable/disable, interface description, VLAN creation, access VLAN, routed interface, OSPF network, and BGP neighbor.
+- [x] 单文件 on-box WebUI，可直接在 Arista EOS 上通过 Python 运行。
+- [x] HTTP 服务监听 TCP/2480。
+- [x] 仪表盘页面：主机名、EOS 版本、CPU、内存、温度、风扇、电源、告警、事件、集成状态。
+- [x] 独立端口视图页面：`/ports`。
+- [x] 端口颜色状态：Up、Down、有介质、Error。
+- [x] 端口详情弹窗：状态、VLAN、双工、协商速率、介质类型、RX/TX Mbps、Kpps、错误计数、EOS 原始输出行。
+- [x] 端口详情中的 RX/TX 折线图。
+- [x] 全局接口流量汇总折线图。
+- [x] 深色模式开关，并在浏览器本地记忆选择。
+- [x] VLAN 表采集：`show vlan brief`。
+- [x] ARP 表采集：`show arp`。
+- [x] FDB/MAC 地址表采集：`show mac address-table`。
+- [x] LLDP 邻居采集：`show lldp neighbors`。
+- [x] OSPF、OSPFv3、BGP summary 采集。
+- [x] 基础告警生成：环境异常、风扇/电源异常、温度偏高、接口错误计数、有介质但链路未 Up、采集失败。
+- [x] Syslog、sFlow、NetFlow/IPFIX 配置探测。
+- [x] 只读命令控制台，并拦截写入/删除/重启等危险命令。
+- [x] 受控配置 API，执行前必须传入 `confirm: "APPLY"`。
+- [x] 配置操作 dry-run 预览。
+- [x] 配置模板：端口启停、接口描述、创建 VLAN、接口加入 VLAN、三层接口、OSPF network、BGP neighbor。
 
-### Partially Done / Needs More Validation
+### 部分完成 / 需要更多验证
 
-- [ ] Validate all read parsers across more EOS versions and switch models.
-- [ ] Validate LLDP parsing when system names, chassis IDs, or port IDs contain spaces.
-- [ ] Improve OSPF/OSPFv3/BGP parsing beyond simple summary rows.
-- [ ] Improve VLAN/ARP/FDB pagination and large-table rendering.
-- [ ] Persist traffic history server-side instead of browser-only in-memory charts.
-- [ ] Add authentication for the WebUI before production use.
-- [ ] Add role-based access control for read-only users vs operators.
-- [ ] Add complete audit logging for every configuration action.
-- [ ] Add rollback helpers for configuration actions.
-- [ ] Add startup persistence through EOS event-handler or a supported init mechanism.
-- [ ] Test controlled write operations in a lab before production use.
+- [ ] 在更多 EOS 版本和交换机型号上验证所有读取解析器。
+- [ ] 验证 LLDP 输出中系统名、Chassis ID、端口 ID 包含空格时的解析。
+- [ ] 改进 OSPF、OSPFv3、BGP 的解析，不只依赖 summary 简表。
+- [ ] 改进 VLAN、ARP、FDB 大表分页和前端渲染性能。
+- [ ] 将流量历史持久化到服务端，而不是只保存在浏览器内存中。
+- [ ] 生产使用前增加 WebUI 登录认证。
+- [ ] 增加只读用户和运维用户的权限区分。
+- [ ] 为每一次配置操作增加完整审计日志。
+- [ ] 增加配置操作回滚辅助能力。
+- [ ] 通过 EOS event-handler 或受支持的启动机制实现开机自启。
+- [ ] 在实验环境中完整验证所有受控写操作。
 
-### Not Done Yet
+### 未完成
 
-- [ ] PoE status and PoE control.
-- [ ] Optical transceiver detail page using `show interfaces transceiver`.
-- [ ] Optical power, DOM temperature, serial number, vendor, and threshold alarms.
-- [ ] Interface counters history storage and longer time-range charts.
-- [ ] Custom dashboard builder with draggable widgets.
-- [ ] Multi-device automatic discovery.
-- [ ] Multi-device topology map.
-- [ ] Syslog receiver integration.
-- [ ] NetFlow/sFlow/IPFIX collector integration.
-- [ ] Alert notification channels.
-- [ ] User login/session management.
-- [ ] HTTPS/TLS support.
-- [ ] Config diff before/after each write operation.
-- [ ] Save configuration button with explicit confirmation.
-- [ ] VLAN trunk configuration templates.
-- [ ] SVI creation and gateway validation workflows.
-- [ ] OSPF area/interface workflow.
-- [ ] BGP address-family and route-policy workflows.
-- [ ] Unit tests with captured EOS command fixtures.
-- [ ] Browser UI regression tests.
-- [ ] Packaging/release artifacts.
+- [ ] PoE 状态查看和 PoE 控制。
+- [ ] 光模块详情页：基于 `show interfaces transceiver`。
+- [ ] 光功率、DOM 温度、序列号、厂商、阈值告警。
+- [ ] 接口计数器历史存储和更长时间范围的图表。
+- [ ] 可拖拽/可自定义的仪表盘组件。
+- [ ] 多设备自动发现。
+- [ ] 多设备拓扑图。
+- [ ] Syslog 接收器集成。
+- [ ] NetFlow/sFlow/IPFIX Collector 集成。
+- [ ] 告警通知渠道。
+- [ ] 用户登录和会话管理。
+- [ ] HTTPS/TLS 支持。
+- [ ] 每次写配置前后的 diff。
+- [ ] 带二次确认的保存配置按钮。
+- [ ] VLAN trunk 配置模板。
+- [ ] SVI 创建和网关校验流程。
+- [ ] OSPF area/interface 配置流程。
+- [ ] BGP address-family 和 route-policy 配置流程。
+- [ ] 基于 EOS 命令样本的单元测试。
+- [ ] 浏览器 UI 回归测试。
+- [ ] 打包和 release 产物。
 
-Production note: many features have only been tested in a limited environment. Validate commands, parsing, and write workflows in a lab before using this on production switches.
+生产提醒：很多功能只在有限环境中测试过。用于生产交换机前，请先在实验环境中验证命令、解析逻辑和写配置流程。
