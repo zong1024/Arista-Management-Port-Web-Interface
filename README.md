@@ -60,6 +60,7 @@ http://交换机IP:2480/
 - [x] HTTP 服务监听 TCP/2480。
 - [x] 仪表盘页面：主机名、EOS 版本、CPU、内存、温度、风扇、电源、告警、事件、集成状态。
 - [x] 独立端口视图页面：`/ports`。
+- [x] QSFP 4x10G breakout 聚合显示：端口页按物理 QSFP 卡片展示，点开后查看每条 10G lane。
 - [x] 端口颜色状态：Up、Down、有介质、Error。
 - [x] 端口详情弹窗：状态、VLAN、双工、协商速率、介质类型、RX/TX Mbps、Kpps、错误计数、EOS 原始输出行。
 - [x] 端口详情中的 RX/TX 折线图。
