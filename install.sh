@@ -9,6 +9,8 @@ HOST="${HOST:-0.0.0.0}"
 PORT="${PORT:-2480}"
 LOG="${LOG:-/mnt/flash/arista7050_web.log}"
 PYTHON="${PYTHON:-python3}"
+STARTUP="${STARTUP:-0}"
+EVENT_HANDLER="${EVENT_HANDLER:-codex-webui-start}"
 
 download() {
   url="$1"
@@ -21,6 +23,34 @@ download() {
     echo "ERROR: curl or wget is required." >&2
     exit 1
   fi
+}
+
+configure_startup() {
+  if [ "$STARTUP" != "1" ] && [ "$STARTUP" != "true" ] && [ "$STARTUP" != "yes" ]; then
+    return
+  fi
+
+  if command -v Cli >/dev/null 2>&1; then
+    cli="Cli"
+  elif [ -x /usr/bin/Cli ]; then
+    cli="/usr/bin/Cli"
+  else
+    echo "ERROR: EOS Cli command not found; cannot configure startup." >&2
+    exit 1
+  fi
+
+  "$cli" -c "configure terminal
+no event-handler $EVENT_HANDLER
+event-handler $EVENT_HANDLER
+trigger on-boot
+delay 60
+timeout 120
+asynchronous
+action bash $PYTHON $APP_PATH --host $HOST --port $PORT --daemon --log $LOG
+end
+write memory"
+
+  echo "Startup enabled: event-handler $EVENT_HANDLER"
 }
 
 echo "Arista WebUI installer"
@@ -47,6 +77,7 @@ fi
 
 "$PYTHON" "$APP_PATH" --host "$HOST" --port "$PORT" --daemon --log "$LOG"
 sleep 1
+configure_startup
 
 if command -v ss >/dev/null 2>&1; then
   ss -ltnp 2>/dev/null | grep ":$PORT " || true
@@ -55,4 +86,4 @@ elif command -v netstat >/dev/null 2>&1; then
 fi
 
 echo "Done. Open: http://<switch-management-ip>:$PORT/"
-echo "Note: this installer does not change EOS ACL or startup configuration."
+echo "Note: this installer does not change EOS ACL. Set STARTUP=1 to create an EOS on-boot event-handler."

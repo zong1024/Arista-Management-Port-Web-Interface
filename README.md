@@ -15,6 +15,12 @@ bash
 curl -fsSL https://raw.githubusercontent.com/zong1024/Arista-Management-Port-Web-Interface/master/install.sh | sh
 ```
 
+安装并设置开机自启动：
+
+```text
+curl -fsSL https://raw.githubusercontent.com/zong1024/Arista-Management-Port-Web-Interface/master/install.sh | STARTUP=1 sh
+```
+
 自定义端口或分支：
 
 ```text
@@ -44,7 +50,7 @@ write memory
 http://交换机IP:2480/
 ```
 
-实现方式：WebUI 是部署在交换机 `/mnt/flash` 的 on-box Python 程序，运行时在 EOS bash 里通过本机 `Cli` / `FastCli` 执行只读 `show` 命令和受控配置模板；不是 eAPI，也不是外部 SSH 代理服务。安装脚本只是用 curl 下载文件并重启 WebUI 进程，默认不修改交换机配置。
+实现方式：WebUI 是部署在交换机 `/mnt/flash` 的 on-box Python 程序，运行时在 EOS bash 里通过本机 `Cli` / `FastCli` 执行只读 `show` 命令和受控配置模板；不是 eAPI，也不是外部 SSH 代理服务。安装脚本只是用 curl 下载文件并重启 WebUI 进程，默认不修改交换机配置。设置 `STARTUP=1` 时会创建 EOS `event-handler`，在开机后延迟 60 秒启动 WebUI。
 
 ## TODO
 
@@ -84,6 +90,7 @@ http://交换机IP:2480/
 - [x] OSPF interface area 配置模板。
 - [x] BGP address-family activate/deactivate 模板。
 - [x] 一条命令安装/更新脚本：`install.sh`。
+- [x] 通过 EOS event-handler 设置开机自启动。
 
 ### 部分完成 / 需要更多验证
 
@@ -96,7 +103,7 @@ http://交换机IP:2480/
 - [ ] 增加只读用户和运维用户的权限区分。
 - [x] 为每一次配置操作增加完整审计日志。
 - [ ] 增加配置操作回滚辅助能力。
-- [ ] 通过 EOS event-handler 或受支持的启动机制实现开机自启。
+- [x] 通过 EOS event-handler 或受支持的启动机制实现开机自启。
 - [ ] 在实验环境中完整验证所有受控写操作。
 
 ### 未完成
