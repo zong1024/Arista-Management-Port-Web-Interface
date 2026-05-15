@@ -5,7 +5,8 @@
   "description": "Local web admin console for Arista DCS-7050QX-32S-F.",
   "type": "commonjs",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "python -m unittest discover -s tests -v"
   },
   "engines": {
     "node": ">=18"
