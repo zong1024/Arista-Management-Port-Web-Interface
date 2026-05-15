@@ -2,6 +2,8 @@
 
 ## 部署方法
 
+如果通过交换机 Console 口操作，串口参数通常为 `9600 8N1`。例如本地 Windows 上可连接 `COM3` 后登录 EOS，再进入 `enable` 和 `bash`。
+
 在交换机上进入 enable 和 bash：
 
 ```text
@@ -33,14 +35,18 @@ curl -fsSL https://raw.githubusercontent.com/zong1024/Arista-Management-Port-Web
 curl -fsSL https://raw.githubusercontent.com/zong1024/Arista-Management-Port-Web-Interface/master/install.sh | WEB_USERNAME=admin WEB_PASSWORD=你的密码 sh
 ```
 
-如需从 EOS control-plane ACL 放行 TCP/2480：
+如果交换机本机 `curl http://127.0.0.1:2480/` 正常，但电脑访问 `http://交换机IP:2480/` 超时，通常是 EOS control-plane ACL 未放行 TCP/2480。不要把只包含 2480 的 ACL 直接绑定到 `system control-plane`，否则可能替换默认控制面 ACL，影响 SSH、SNMP、路由协议等管理/控制流量。推荐先复制当前 `default-control-plane-acl` 的规则，再额外插入 TCP/2480：
 
 ```text
+show ip access-lists default-control-plane-acl
 configure terminal
 ip access-list codex-web-2480-cp
-   5 permit tcp any any eq 2480
+   counters per-entry
+   ! 先复制 default-control-plane-acl 中的现有 permit 规则
+   75 permit tcp any any eq 2480
 system control-plane
    ip access-group codex-web-2480-cp in
+end
 write memory
 ```
 
@@ -50,7 +56,32 @@ write memory
 http://交换机IP:2480/
 ```
 
-实现方式：WebUI 是部署在交换机 `/mnt/flash` 的 on-box Python 程序，运行时在 EOS bash 里通过本机 `Cli` / `FastCli` 执行只读 `show` 命令和受控配置模板；不是 eAPI，也不是外部 SSH 代理服务。安装脚本只是用 curl 下载文件并重启 WebUI 进程，默认不修改交换机配置。设置 `STARTUP=1` 时会创建 EOS `event-handler`，在开机后延迟 60 秒启动 WebUI。
+实现方式：WebUI 是部署在交换机 `/mnt/flash` 的 on-box Python 程序。状态采集优先使用本机 eAPI `http://localhost:8080/command-api` 的 JSON 输出，eAPI 不可用或命令不支持时自动回退到本机 `Cli` / `FastCli` 文本输出；受控配置模板仍通过 EOS CLI 执行。安装脚本只是用 curl 下载文件并重启 WebUI 进程，默认不修改交换机配置。设置 `STARTUP=1` 时会创建 EOS `event-handler`，在开机后延迟 60 秒启动 WebUI。
+
+推荐只启用本机 eAPI，不对管理网开放 eAPI HTTP/HTTPS：
+
+```text
+configure terminal
+management api http-commands
+   no protocol http
+   no protocol https
+   protocol http localhost
+   protocol unix-socket
+   no shutdown
+end
+```
+
+## 故障排查
+
+### `chmod: Operation not permitted`
+
+部分 EOS 版本或 flash 挂载方式会拒绝修改 `/mnt/flash` 中文件的执行权限，例如：
+
+```text
+chmod: changing permissions of '/mnt/flash/arista7050_web.py.download.4334': Operation not permitted
+```
+
+WebUI 是通过 `python3 /mnt/flash/arista7050_web.py` 启动的，不依赖文件可执行位。安装脚本会在 `chmod` 失败时打印警告并继续完成编译、替换和启动。
 
 ## TODO
 
@@ -77,10 +108,11 @@ http://交换机IP:2480/
 - [x] 受控配置 API，执行前必须传入 `confirm: "APPLY"`。
 - [x] 配置操作 dry-run 预览。
 - [x] 配置模板：端口启停、接口描述、创建 VLAN、接口加入 VLAN、三层接口、OSPF network、BGP neighbor。
-- [x] 光模块基础采集：`show interfaces transceiver` / detail。
-- [x] 光模块 DOM 字段解析：温度、TX/RX 光功率、序列号、厂商、型号、阈值/告警原始行。
+- [x] 光模块基础采集：`show interfaces transceiver` / `csv` / `properties` / detail，并结合 `show inventory` 补全厂商、型号、序列号。
+- [x] 光模块 DOM 字段解析：温度、TX/RX 光功率、阈值/告警原始行，避免把 DOM 数值行误显示为模块类型。
 - [x] 支持机型的 PoE 状态采集和 PoE 启停模板。
 - [x] 接口计数器历史持久化到服务端 JSON，并用于更长时间范围折线图。
+- [x] 读取采集优先使用本机 eAPI JSON，eAPI 不支持的命令自动回退 CLI。
 - [x] 可选 WebUI Basic 登录认证：通过 `WEB_USERNAME` / `WEB_PASSWORD` 开启。
 - [x] 为每一次配置操作记录审计日志。
 - [x] 每次写配置前后的 running-config diff。
@@ -96,7 +128,7 @@ http://交换机IP:2480/
 ### 部分完成 / 需要更多验证
 
 - [ ] 在更多 EOS 版本和交换机型号上验证所有读取解析器。
-- [ ] 验证 LLDP 输出中系统名、Chassis ID、端口 ID 包含空格时的解析。
+- [x] 验证 LLDP 输出中系统名、Chassis ID、端口 ID 包含空格时的解析。
 - [ ] 改进 OSPF、OSPFv3、BGP 的解析，不只依赖 summary 简表。
 - [ ] 改进 VLAN、ARP、FDB 大表分页和前端渲染性能。
 - [x] 将流量历史持久化到服务端，而不是只保存在浏览器内存中。
